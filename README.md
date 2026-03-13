@@ -30,8 +30,4 @@ Each script has its own README with full setup instructions. The general pattern
 3. Run once to grant permissions
 4. Use the menu or trigger to run it
 
----
 
-## Contact
-
-moseriewere@gmail.com
