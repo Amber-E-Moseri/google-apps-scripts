@@ -1,0 +1,114 @@
+const FOLDER_ID = '1pqvy_X8p1eoEJxjiFzsoWrFqRmMgrIAe';
+const ALERT_EMAIL = 'ella4@my.yorku.ca';
+
+function createTrigger() {
+  ScriptApp.getProjectTriggers().forEach(t => {
+    if (t.getHandlerFunction() === 'checkForNewFiles') {
+      ScriptApp.deleteTrigger(t);
+    }
+  });
+  ScriptApp.newTrigger('checkForNewFiles')
+    .timeBased()
+    .everyMinutes(5)
+    .create();
+  Logger.log('Trigger created.');
+}
+
+function checkForNewFiles() {
+  const props = PropertiesService.getScriptProperties();
+
+  // Use last-checked timestamp instead of scanning all files
+  const lastChecked = props.getProperty('lastChecked');
+  const now = new Date();
+
+  // On first run, just save the timestamp and exit
+  if (!lastChecked) {
+    props.setProperty('lastChecked', now.toISOString());
+    Logger.log('First run — timestamp saved. Watching for new files from now on.');
+    return;
+  }
+
+  // Query Drive for files created after lastChecked, inside the target folder tree
+  const newFiles = [];
+  let pageToken = null;
+
+  do {
+    const params = {
+      q: `createdTime > '${lastChecked}' and trashed = false`,
+      fields: 'nextPageToken, files(id, name, createdTime, webViewLink, owners, parents)',
+      pageSize: 100,
+      ...(pageToken && { pageToken })
+    };
+
+    const result = Drive.Files.list(params);
+    const files = result.files || [];
+
+    files.forEach(file => {
+      // Confirm file lives somewhere inside our target folder
+      if (isInFolder(file.id, FOLDER_ID)) {
+        newFiles.push({
+          name: file.name,
+          creator: file.owners?.[0]?.emailAddress ?? 'Unknown',
+          date: new Date(file.createdTime).toLocaleString(),
+          url: file.webViewLink,
+          folder: getParentFolderName(file.parents)
+        });
+      }
+    });
+
+    pageToken = result.nextPageToken;
+  } while (pageToken);
+
+  // Save the new timestamp before sending email
+  props.setProperty('lastChecked', now.toISOString());
+
+  if (newFiles.length > 0) {
+    const lines = newFiles.map(f =>
+      `• ${f.name}\n  Folder: ${f.folder}\n  Added by: ${f.creator}\n  Date: ${f.date}\n  Link: ${f.url}`
+    ).join('\n\n');
+    MailApp.sendEmail({
+      to: ALERT_EMAIL,
+      subject: `${newFiles.length} new file(s) added to BLW CAN Regional Media`,
+      body: `New files detected:\n\n${lines}`
+    });
+    Logger.log(`Email sent for ${newFiles.length} new file(s).`);
+  } else {
+    Logger.log('No new files found.');
+  }
+}
+
+// Walk up the parent chain to confirm file is inside our root folder
+function isInFolder(fileId, targetFolderId) {
+  try {
+    const visited = new Set();
+    let parents = Drive.Files.get(fileId, { fields: 'parents' }).parents || [];
+
+    while (parents.length > 0) {
+      const parentId = parents[0];
+      if (parentId === targetFolderId) return true;
+      if (visited.has(parentId)) break;
+      visited.add(parentId);
+      parents = Drive.Files.get(parentId, { fields: 'parents' }).parents || [];
+    }
+  } catch(e) {
+    Logger.log(`isInFolder error: ${e.message}`);
+  }
+  return false;
+}
+
+// Get the immediate parent folder name for display in the email
+function getParentFolderName(parents) {
+  try {
+    if (!parents || parents.length === 0) return 'Unknown';
+    const parent = Drive.Files.get(parents[0], { fields: 'name' });
+    return parent.name;
+  } catch(e) {
+    return 'Unknown';
+  }
+}
+
+// Run this once to reset the timestamp (does NOT re-scan all files)
+function resetTimestamp() {
+  PropertiesService.getScriptProperties().deleteProperty('lastChecked');
+  Logger.log('Timestamp cleared. Run checkForNewFiles once to re-initialize.');
+}
